@@ -6,6 +6,16 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 
+_PHASE_LABELS_TR = {
+    "premarket": "piyasa öncesi",
+    "intraday": "gün içi",
+    "lunch_break": "seans arası / öğle molası",
+    "closing_auction": "kapanış öncesi",
+    "postmarket": "piyasa sonrası / kapanış",
+    "non_trading": "işlem dışı gün",
+    "unknown": "bilinmeyen aşama",
+}
+
 _PHASE_LABELS_ZH = {
     "premarket": "盘前",
     "intraday": "盘中",
@@ -28,6 +38,12 @@ _PHASE_LABELS_EN = {
 
 _KNOWN_PHASES = set(_PHASE_LABELS_ZH)
 
+_WARNING_LABELS_TR = {
+    "unknown_market": "bilinmeyen piyasa",
+    "calendar_unavailable": "işlem takvimi kullanım dışı",
+    "calendar_error": "işlem takvimi hatası",
+}
+
 _WARNING_LABELS_ZH = {
     "unknown_market": "未知市场",
     "calendar_unavailable": "交易日历不可用",
@@ -46,25 +62,39 @@ def format_market_phase_prompt_section(
     *,
     report_language: str = "zh",
 ) -> str:
-    """Return a human-readable prompt section for a P1a market phase payload.
-
-    The helper is intentionally narrow: callers pass the runtime dict produced
-    by ``MarketPhaseContext.to_dict()`` when available. Missing optional fields
-    are omitted, unknown phases use the conservative ``unknown`` template, and
-    raw runtime keys such as ``market_phase_context`` are never rendered.
-    """
+    """Return a human-readable prompt section for a P1a market phase payload."""
     if not isinstance(market_phase_context, dict) or not market_phase_context:
         return ""
 
-    # Korean reuses the English structural context; the output-language
-    # directive (see decision agent) constrains the model to write in Korean.
-    lang = "en" if str(report_language or "").lower() in {"en", "ko"} else "zh"
+    lang_str = str(report_language or "").lower()
+    if lang_str in {"tr", "turkish"}:
+        lang = "tr"
+    elif lang_str in {"en", "ko"}:
+        lang = "en"
+    else:
+        lang = "zh"
+
     raw_phase = market_phase_context.get("phase")
     phase = raw_phase if isinstance(raw_phase, str) and raw_phase in _KNOWN_PHASES else "unknown"
 
-    if lang == "en":
+    if lang == "tr":
+        return _format_tr(market_phase_context, phase)
+    elif lang == "en":
         return _format_en(market_phase_context, phase)
     return _format_zh(market_phase_context, phase)
+
+
+def _format_tr(ctx: Dict[str, Any], phase: str) -> str:
+    label = _PHASE_LABELS_TR[phase]
+    lines = ["", "## Piyasa Aşaması Bağlamı", f"- Mevcut piyasa aşaması: {label}"]
+    lines.extend(_metadata_lines_tr(ctx))
+    lines.append(f"- Aşama kısıtlaması: {_phase_rule_tr(ctx, phase)}")
+
+    warning_text = _warning_text(ctx.get("warnings"), lang="tr")
+    if warning_text:
+        lines.append(f"- Performans düşüşü notu: {warning_text}; analizi muhafazakar tutun.")
+
+    return "\n".join(lines) + "\n"
 
 
 def _format_zh(ctx: Dict[str, Any], phase: str) -> str:
@@ -91,6 +121,27 @@ def _format_en(ctx: Dict[str, Any], phase: str) -> str:
         lines.append(f"- Degradation note: {warning_text}; keep the analysis conservative.")
 
     return "\n".join(lines) + "\n"
+
+
+def _metadata_lines_tr(ctx: Dict[str, Any]) -> List[str]:
+    items: List[str] = []
+    market = _string_value(ctx.get("market"))
+    market_time = _string_value(ctx.get("market_local_time"))
+    effective_date = _string_value(ctx.get("effective_daily_bar_date"))
+    minutes_to_open = _int_like(ctx.get("minutes_to_open"))
+    minutes_to_close = _int_like(ctx.get("minutes_to_close"))
+
+    if market:
+        items.append(f"- Piyasa: {market}")
+    if market_time:
+        items.append(f"- Piyasa yerel saati: {market_time}")
+    if effective_date:
+        items.append(f"- Yeniden kullanılabilir en son tam günlük grafik tarihi: {effective_date}")
+    if minutes_to_open is not None:
+        items.append(f"- Normal seans açılışına yaklaşık {minutes_to_open} dakika var.")
+    if minutes_to_close is not None:
+        items.append(f"- Normal seans kapanışına yaklaşık {minutes_to_close} dakika var.")
+    return items
 
 
 def _metadata_lines_zh(ctx: Dict[str, Any]) -> List[str]:
@@ -133,6 +184,34 @@ def _metadata_lines_en(ctx: Dict[str, Any]) -> List[str]:
     if minutes_to_close is not None:
         items.append(f"- About {minutes_to_close} minutes until the regular session closes.")
     return items
+
+
+def _phase_rule_tr(ctx: Dict[str, Any], phase: str) -> str:
+    effective_date = _string_value(ctx.get("effective_daily_bar_date"))
+    date_hint = f" ({effective_date})" if effective_date else ""
+
+    if phase == "premarket":
+        return (
+            f"Piyasa henüz açılmadı. Bugünün fiyat hareketini 'gerçekleşmiş' gibi tanımlamayın; "
+            f"açılış planı için yalnızca son tam günlük grafiği{date_hint} ve piyasa öncesi bilgileri kullanın."
+        )
+    if phase in {"intraday", "lunch_break", "closing_auction"}:
+        base = "Bu bir seans sonu özet raporu değildir. Mevcut gün içi duruma, takip koşullarına ve bir sonraki kontrol noktasına odaklanın."
+        if ctx.get("is_partial_bar") is True:
+            base += " En son günlük mum tamamlanmamış olabilir; bunu tam bir günlük mum gibi değerlendirmeyin."
+        if phase == "lunch_break":
+            base += " Seans arasında, sonraki onaylar öğleden sonraki seansa bağlıdır."
+        if phase == "closing_auction":
+            base += " Kapanışa yakın saatlerde gün sonu risk kontrolüne ve geceye pozisyon taşıma kararlarına vurgu yapın."
+        return base
+    if phase == "postmarket":
+        return "Normal seans sona erdi, bu nedenle tam gün özeti tarzı analize uygundur."
+    if phase == "non_trading":
+        return (
+            f"Bu gün işlem günü değildir veya manuel tetiklenmiştir. En son tam günlük mum verilerini{date_hint} ve bilinen olayları kullanın; "
+            "gerçekleşmeyen gün içi hareketleri uydurmayın."
+        )
+    return "Piyasa aşaması güvenilir bir şekilde çıkarılamıyor. Piyasa öncesi veya gün içi varsayımsal veriler üretmeyin, sonuçları temkinli tutun."
 
 
 def _phase_rule_zh(ctx: Dict[str, Any], phase: str) -> str:
@@ -191,11 +270,17 @@ def _phase_rule_en(ctx: Dict[str, Any], phase: str) -> str:
 def _warning_text(value: Any, *, lang: str) -> str:
     if not isinstance(value, list):
         return ""
-    labels = _WARNING_LABELS_EN if lang == "en" else _WARNING_LABELS_ZH
+    if lang == "tr":
+        labels = _WARNING_LABELS_TR
+    elif lang == "en":
+        labels = _WARNING_LABELS_EN
+    else:
+        labels = _WARNING_LABELS_ZH
+
     rendered = [labels[item] for item in value if isinstance(item, str) and item in labels]
     if not rendered:
         return ""
-    if lang == "en":
+    if lang in {"en", "tr"}:
         return ", ".join(rendered)
     return "、".join(rendered)
 
