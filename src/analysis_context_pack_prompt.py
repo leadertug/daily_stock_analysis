@@ -7,6 +7,15 @@ from collections.abc import Mapping
 from typing import Any, Dict, Iterable, List, Optional
 
 
+BLOCK_LABELS_TR = {
+    "quote": "Piyasa Fiyatı",
+    "daily_bars": "Günlük Grafikler",
+    "technical": "Teknik Analiz",
+    "chip": "Takas/Para Akışı",
+    "fundamentals": "Temel Analiz",
+    "news": "Haberler",
+}
+
 BLOCK_LABELS_ZH = {
     "quote": "行情",
     "daily_bars": "日线",
@@ -23,6 +32,17 @@ BLOCK_LABELS_EN = {
     "chip": "chip",
     "fundamentals": "fundamentals",
     "news": "news",
+}
+
+STATUS_LABELS_TR = {
+    "available": "Mevcut",
+    "missing": "Eksik",
+    "not_supported": "Desteklenmiyor",
+    "fallback": "Yedek Mod",
+    "stale": "Süresi Dolmuş",
+    "estimated": "Tahmini",
+    "partial": "Kısmen Mevcut",
+    "fetch_failed": "Veri Çekme Başarısız",
 }
 
 STATUS_LABELS_ZH = {
@@ -45,6 +65,13 @@ STATUS_LABELS_EN = {
     "estimated": "estimated",
     "partial": "partial",
     "fetch_failed": "fetch failed",
+}
+
+QUALITY_LEVEL_LABELS_TR = {
+    "good": "İyi",
+    "usable": "Kullanılabilir",
+    "limited": "Sınırlı",
+    "poor": "Zayıf",
 }
 
 QUALITY_LEVEL_LABELS_ZH = {
@@ -101,17 +128,21 @@ SENSITIVE_MARKERS = (
 
 
 def normalize_analysis_context_pack_language(report_language: str = "zh") -> str:
-    # Korean reuses the English structural context labels; the model is
-    # constrained to Korean output via the analysis output-language directive.
-    return "en" if str(report_language or "").lower() in {"en", "ko"} else "zh"
+    lang = str(report_language or "").lower()
+    if lang in {"tr", "turkish"}:
+        return "tr"
+    if lang in {"en", "ko"}:
+        return "en"
+    return "zh"
 
 
 def get_analysis_context_pack_block_labels(report_language: str = "zh") -> Dict[str, str]:
-    return (
-        BLOCK_LABELS_EN
-        if normalize_analysis_context_pack_language(report_language) == "en"
-        else BLOCK_LABELS_ZH
-    )
+    lang = normalize_analysis_context_pack_language(report_language)
+    if lang == "tr":
+        return BLOCK_LABELS_TR
+    elif lang == "en":
+        return BLOCK_LABELS_EN
+    return BLOCK_LABELS_ZH
 
 
 def iter_analysis_context_pack_block_keys(blocks: Mapping[str, Any]) -> List[str]:
@@ -125,12 +156,7 @@ def format_analysis_context_pack_prompt_section(
     *,
     report_language: str = "zh",
 ) -> str:
-    """Return a low-sensitivity prompt summary for an AnalysisContextPack.
-
-    The renderer intentionally ignores item values. P3 consumes the pack as a
-    runtime prompt signal only; P4 exposes a separate low-sensitivity overview,
-    not this prompt string or the full pack.
-    """
+    """Return a low-sensitivity prompt summary for an AnalysisContextPack."""
     payload = _pack_to_dict(pack)
     if not payload:
         return ""
@@ -141,7 +167,11 @@ def format_analysis_context_pack_prompt_section(
         return ""
 
     lang = normalize_analysis_context_pack_language(report_language)
-    return _format_en(payload) if lang == "en" else _format_zh(payload)
+    if lang == "tr":
+        return _format_tr(payload)
+    elif lang == "en":
+        return _format_en(payload)
+    return _format_zh(payload)
 
 
 def analysis_context_pack_to_dict(pack: Any) -> Dict[str, Any]:
@@ -162,6 +192,23 @@ def analysis_context_pack_to_dict(pack: Any) -> Dict[str, Any]:
 
 
 _pack_to_dict = analysis_context_pack_to_dict
+
+
+def _format_tr(payload: Dict[str, Any]) -> str:
+    lines = ["", "## Analiz Bağlam Paketi Özeti"]
+    lines.extend(_subject_lines(payload, lang="tr"))
+    block_lines = _block_lines(payload, lang="tr")
+    if block_lines:
+        lines.append("- Veri Blok Durumu:")
+        lines.extend(f"  - {line}" for line in block_lines)
+    metadata_lines = _metadata_lines(payload, lang="tr")
+    if metadata_lines:
+        lines.extend(metadata_lines)
+    warnings = _list_strings(_nested(payload, "data_quality", "warnings"))
+    if warnings:
+        lines.append(f"- Veri Kalitesi Notları: {_join_text(warnings, lang='tr')}")
+    lines.extend(_data_limitation_lines(payload, lang="tr"))
+    return "\n".join(lines) + "\n"
 
 
 def _format_zh(payload: Dict[str, Any]) -> str:
@@ -204,6 +251,20 @@ def _subject_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
     name = _safe_text(subject.get("stock_name"))
     market = _safe_text(subject.get("market"))
     version = _safe_text(payload.get("pack_version"))
+
+    if lang == "tr":
+        label = code or "bilinmeyen"
+        if name:
+            label += f" ({name})"
+        line = f"- Varlık/Hisse: {label}"
+        details = []
+        if market:
+            details.append(f"piyasa={market}")
+        if version:
+            details.append(f"paket_sürümü={version}")
+        if details:
+            line += f"; {', '.join(details)}"
+        return [line]
 
     if lang == "en":
         label = code or "unknown"
@@ -255,19 +316,19 @@ def _block_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
             _first_item_field(block.get("items"), "source"),
         )
         if source:
-            parts.append(f"source={source}")
+            parts.append(f"kaynak={source}" if lang == "tr" else f"source={source}")
 
         warnings = _list_strings(block.get("warnings"))
         if warnings:
-            warning_label = "warnings" if lang == "en" else "告警"
+            warning_label = "uyarılar" if lang == "tr" else ("warnings" if lang == "en" else "告警")
             parts.append(f"{warning_label}={_join_text(warnings, lang=lang)}")
 
         reasons = _item_missing_reasons(block.get("items"))
         if reasons:
-            reason_label = "missing_reason" if lang == "en" else "missing_reason"
+            reason_label = "eksiklik_nedeni" if lang == "tr" else "missing_reason"
             parts.append(f"{reason_label}={_join_text(reasons, lang=lang)}")
 
-        lines.append("；".join(parts) if lang == "zh" else "; ".join(parts))
+        lines.append("; ".join(parts) if lang in {"en", "tr"} else "；".join(parts))
     return lines
 
 
@@ -278,15 +339,16 @@ def _metadata_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
     news_count = metadata.get("news_result_count")
     if news_count is None:
         return []
-    return [
-        f"- News result count: {news_count}"
-        if lang == "en"
-        else f"- 新闻结果数：{news_count}"
-    ]
+    if lang == "tr":
+        return [f"- Haber sonuç sayısı: {news_count}"]
+    elif lang == "en":
+        return [f"- News result count: {news_count}"]
+    return [f"- 新闻结果数：{news_count}"]
 
 
 def _data_limitation_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
-    lines = ["", "## Data Limitations" if lang == "en" else "## 数据限制"]
+    title = "## Veri Sınırlamaları" if lang == "tr" else ("## Data Limitations" if lang == "en" else "## 数据限制")
+    lines = ["", title]
     data_quality = payload.get("data_quality")
     if not isinstance(data_quality, Mapping):
         data_quality = {}
@@ -295,7 +357,11 @@ def _data_limitation_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
     level = _safe_text(data_quality.get("level"))
     if score is not None:
         level_text = _quality_level_label(level, lang=lang)
-        if lang == "en":
+        if lang == "tr":
+            line = f"- Veri kalitesi puanı: {score}/100"
+            if level_text:
+                line += f" ({level_text})"
+        elif lang == "en":
             line = f"- Data quality score: {score}/100"
             if level_text:
                 line += f" ({level_text})"
@@ -310,14 +376,20 @@ def _data_limitation_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
         lang=lang,
     )
     if limitations:
-        label = "Known limitations" if lang == "en" else "已知限制"
-        separator = ": " if lang == "en" else "："
+        label = "Bilinen sınırlamalar" if lang == "tr" else ("Known limitations" if lang == "en" else "已知限制")
+        separator = ": " if lang in {"en", "tr"} else "："
         lines.append(f"- {label}{separator}{_join_text(limitations, lang=lang)}")
 
     lines.extend(_phase_data_quality_constraint_lines(payload, lang=lang))
 
     if _has_core_degraded_block(payload):
-        if lang == "en":
+        if lang == "tr":
+            lines.append(
+                "- Güven kuralı: Piyasa fiyatı, günlük grafikler veya teknik veriler "
+                "süresi dolmuş, yedek modda, eksik, çekilememiş, kısmi veya tahmini olduğunda, "
+                "nihai JSON güven seviyesi (confidence_level) 'Yüksek' olamaz."
+            )
+        elif lang == "en":
             lines.append(
                 "- Confidence rule: when quote, daily bars, or technical data is "
                 "stale, fallback, missing, fetch_failed, partial, or estimated, "
@@ -329,7 +401,16 @@ def _data_limitation_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
                 "fetch_failed、partial 或 estimated 时，最终 JSON 的 confidence_level 不得为高。"
             )
 
-    if lang == "en":
+    if lang == "tr":
+        lines.append(
+            "- Analiz kuralı: Eksik yardımcı veri blokları sadece ilgili analiz bölümlerini "
+            "sınırlandırır; veri eksikliğinin kendisini olumlu (boğa) veya olumsuz (ayı) olarak yorumlamayın."
+        )
+        lines.append(
+            "- Güvenlik kuralı: Sadece bu özetteki status, source, warnings ve missing_reason "
+            "bilgilerini kullanın; ham veri yüklerini, haber metinlerini, gizli anahtarları veya webhook'ları tekrarlamayın."
+        )
+    elif lang == "en":
         lines.append(
             "- Analysis rule: missing auxiliary blocks only limit their matching "
             "analysis sections; do not treat missing data itself as bullish or bearish."
@@ -352,7 +433,7 @@ def _data_limitation_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
 
 def _localized_limitations(limitations: List[str], *, lang: str) -> List[str]:
     labels = get_analysis_context_pack_block_labels(lang)
-    status_labels = STATUS_LABELS_EN if lang == "en" else STATUS_LABELS_ZH
+    status_labels = STATUS_LABELS_TR if lang == "tr" else (STATUS_LABELS_EN if lang == "en" else STATUS_LABELS_ZH)
     result: List[str] = []
     for item in limitations:
         key, separator, status = item.partition(":")
@@ -366,7 +447,7 @@ def _localized_limitations(limitations: List[str], *, lang: str) -> List[str]:
         if not label or not status_label:
             continue
         result.append(
-            f"{label}: {status_label}" if lang == "en" else f"{label}：{status_label}"
+            f"{label}: {status_label}" if lang in {"en", "tr"} else f"{label}：{status_label}"
         )
     return result[:5]
 
@@ -391,6 +472,24 @@ def _phase_data_quality_constraint_lines(payload: Dict[str, Any], *, lang: str) 
 
     phase = _phase_value(payload)
     if not phase or phase == "postmarket":
+        return []
+
+    if lang == "tr":
+        if phase in INTRADAY_MARKET_PHASES:
+            return [
+                "- Aşama/veri kuralı: Gün içi değerlendirme canlı piyasa, günlük grafik veya "
+                "teknik veri kalitesiyle sınırlıdır; kısa vadeli sonuçlara varmadan önce bu sınırlamaları belirtin."
+            ]
+        if phase == "premarket":
+            return [
+                "- Aşama/veri kuralı: Açılış planı veri güncelliği veya yedek mod durumu ile sınırlıdır; "
+                "düşük kaliteli piyasa verilerini bugün gerçekleşmiş fiyat hareketi gibi sunmayın."
+            ]
+        if phase in CONSERVATIVE_MARKET_PHASES:
+            return [
+                "- Aşama/veri kuralı: Yalnızca mevcut verileri muhafazakar bir şekilde kullanın ve "
+                "gerçekleşmemiş gün içi verileri uydurmayın."
+            ]
         return []
 
     if lang == "en":
@@ -439,7 +538,7 @@ def _phase_value(payload: Dict[str, Any]) -> str:
 
 
 def _quality_level_label(level: str, *, lang: str) -> str:
-    labels = QUALITY_LEVEL_LABELS_EN if lang == "en" else QUALITY_LEVEL_LABELS_ZH
+    labels = QUALITY_LEVEL_LABELS_TR if lang == "tr" else (QUALITY_LEVEL_LABELS_EN if lang == "en" else QUALITY_LEVEL_LABELS_ZH)
     return labels.get(level, "")
 
 
@@ -517,5 +616,5 @@ def _safe_text(value: Any) -> str:
 
 
 def _join_text(values: Iterable[str], *, lang: str) -> str:
-    separator = ", " if lang == "en" else "、"
+    separator = ", " if lang in {"en", "tr"} else "、"
     return separator.join(values)
