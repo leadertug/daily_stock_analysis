@@ -48,6 +48,9 @@ def format_market_structure_prompt_section(
         missing_fields.extend(_string_values(data_quality.get("missing_fields")))
     missing_fields = list(dict.fromkeys(missing_fields))
 
+    if language in {"tr", "turkish"}:
+        lines = _format_tr(context, stock_position, active_themes, leading_concepts, leading_industries, primary_name, risk_tags, missing_fields)
+        return "\n".join(lines) + "\n"
     if language == "en":
         lines = _format_en(context, stock_position, active_themes, leading_concepts, leading_industries, primary_name, risk_tags, missing_fields)
         return "\n".join(lines) + "\n"
@@ -57,6 +60,38 @@ def format_market_structure_prompt_section(
 
     lines = _format_zh(context, stock_position, active_themes, leading_concepts, leading_industries, primary_name, risk_tags, missing_fields)
     return "\n".join(lines) + "\n"
+
+
+def _format_tr(
+    context: Any,
+    stock_position: dict[str, Any],
+    active_themes: List[str],
+    leading_concepts: List[str],
+    leading_industries: List[str],
+    primary_name: str,
+    risk_tags: List[str],
+    missing_fields: List[str],
+) -> List[str]:
+    lines = [
+        "\n## Piyasa Yapısı Bağlamı",
+        f"- Durum: {context.get('status', 'bilinmiyor')}",
+    ]
+    if active_themes:
+        lines.append(f"- Aktif temalar: {', '.join(active_themes)}")
+    if leading_concepts:
+        lines.append(f"- Yükselişe öncülük eden konseptler: {', '.join(leading_concepts)}")
+    if leading_industries:
+        lines.append(f"- Yükselişe öncülük eden sektörler: {', '.join(leading_industries)}")
+    if primary_name:
+        lines.append(f"- Hissenin ana teması: {primary_name}")
+    lines.append(f"- Tema aşaması: {stock_position.get('theme_phase', 'bilinmiyor')}")
+    lines.append(f"- Hisse rolü/konumu: {stock_position.get('stock_role', 'bilinmiyor')}")
+    if risk_tags:
+        lines.append(f"- Risk etiketleri: {', '.join(risk_tags)}")
+    if missing_fields:
+        lines.append(f"- Eksik kanıtlar: {', '.join(missing_fields)}")
+    lines.append("- Koruma kuralı: Bileşen veya lider hisse kanıtı olmadan hissenin 'lider hisse' olduğunu iddia etmeyin.")
+    return lines
 
 
 def _format_en(
